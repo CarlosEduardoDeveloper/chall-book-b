@@ -4,12 +4,13 @@ import challbooks.br.com.domain.VwBooksByAuthor;
 import challbooks.br.com.repository.ReportRepository;
 import challbooks.br.com.service.ReportService;
 import challbooks.br.com.utils.HeaderFooterPageEvent;
-import com.lowagie.text.pdf.PdfPCell;
-import com.lowagie.text.pdf.PdfPTable;
+import com.lowagie.text.*;
+import com.lowagie.text.pdf.PdfWriter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
+import java.util.*;
 import java.util.List;
 
 @Service
@@ -20,107 +21,110 @@ public class ReportServiceImpl implements ReportService {
 
     @Override
     public byte[] generateBooksByAuthorReport() {
-
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            
-            com.lowagie.text.Document pdf =
-                    new com.lowagie.text.Document(com.lowagie.text.PageSize.A4, 40, 40, 80, 50);
-            
-            com.lowagie.text.pdf.PdfWriter writer =
-                    com.lowagie.text.pdf.PdfWriter.getInstance(pdf, baos);
-            
-            writer.setPageEvent(new HeaderFooterPageEvent());
 
+            Document pdf = new Document(PageSize.A4, 40, 40, 80, 50);
+            PdfWriter writer = PdfWriter.getInstance(pdf, baos);
+            writer.setPageEvent(new HeaderFooterPageEvent());
             pdf.open();
-            
-            com.lowagie.text.Paragraph title = new com.lowagie.text.Paragraph(
-                    "Books by Author Report\n\n",
-                    com.lowagie.text.FontFactory.getFont("Helvetica", 20, com.lowagie.text.Font.BOLD)
+
+            Paragraph title = new Paragraph(
+                    "Catálogo\n\n",
+                    FontFactory.getFont("Helvetica", 20, Font.BOLD)
             );
-            title.setAlignment(com.lowagie.text.Element.ALIGN_CENTER);
+            title.setAlignment(Element.ALIGN_CENTER);
             pdf.add(title);
 
             List<VwBooksByAuthor> rows = repository.findReportData();
 
-            String currentAuthor = null;
-            String currentBook = null;
+            Map<Long, BookGroup> groups = groupBookData(rows);
 
-            PdfPTable table = null;
-
-            for (VwBooksByAuthor row : rows) {
-                
-                if (!row.getAuthorName().equals(currentAuthor)) {
-                    currentAuthor = row.getAuthorName();
-
-                    pdf.add(new com.lowagie.text.Paragraph(
-                            "\nAuthor: " + currentAuthor + "\n",
-                            com.lowagie.text.FontFactory.getFont("Helvetica", 16, com.lowagie.text.Font.BOLD)
-                    ));
-                }
-                
-                if (!row.getBookTitle().equals(currentBook)) {
-
-                    currentBook = row.getBookTitle();
-
-                    pdf.add(new com.lowagie.text.Paragraph(
-                            "Book: " + currentBook + " (" + row.getPublicationYear() + ")\n" +
-                                    "Publisher: " + row.getPublisher() + "\n" +
-                                    "Edition: " + row.getEdition() + "\n" +
-                                    "Price: R$ " + row.getPrice() + "\n\n",
-                            com.lowagie.text.FontFactory.getFont("Helvetica", 12)
-                    ));
-                    
-                    table = createStyledTable();
-                }
-                
-                table.addCell(createValueCell(row.getSubjectDescription()));
-                
-                if (isNextRowNewBook(rows, row)) {
-                    pdf.add(table);
-                }
-            }
-            
-            if (table != null) {
-                pdf.add(table);
-            }
+            renderPdfContent(pdf, groups);
 
             pdf.close();
-
             return baos.toByteArray();
 
         } catch (Exception e) {
-            throw new RuntimeException("Error generating PDF report", e);
+            throw new RuntimeException("Erro ao gerar PDF", e);
         }
     }
-    
-    private PdfPTable createStyledTable() {
-        PdfPTable table = new PdfPTable(1);
-        table.setWidthPercentage(100);
-        table.setSpacingBefore(5);
-        table.setSpacingAfter(10);
-        return table;
+
+    private Map<Long, BookGroup> groupBookData(List<VwBooksByAuthor> rows) {
+        Map<Long, BookGroup> groups = new LinkedHashMap<>();
+
+        for (VwBooksByAuthor row : rows) {
+            Long bookId = row.getBookId();
+
+            if (bookId == null) {
+                bookId = (long) row.getBookTitle().hashCode();
+            }
+
+            BookGroup g = groups.computeIfAbsent(bookId, id -> {
+                BookGroup newGroup = new BookGroup();
+                newGroup.bookId = id;
+                newGroup.title = row.getBookTitle();
+                newGroup.publisher = row.getPublisher();
+                newGroup.edition = String.valueOf(row.getEdition());
+                newGroup.publicationYear = row.getPublicationYear() != null
+                        ? String.valueOf(row.getPublicationYear()) : "";
+                newGroup.price = row.getPrice() != null
+                        ? String.valueOf(row.getPrice()) : "";
+                return newGroup;
+            });
+
+            if (row.getAuthorName() != null && !row.getAuthorName().trim().isEmpty()) {
+                String authorName = row.getAuthorName().trim();
+                boolean added = g.authors.add(authorName);
+            }
+
+            if (row.getSubjectDescription() != null && !row.getSubjectDescription().trim().isEmpty()) {
+                g.subjects.add(row.getSubjectDescription().trim());
+            }
+        }
+
+        return groups;
     }
 
-    private PdfPCell createHeaderCell(String text) {
-        PdfPCell cell = new PdfPCell(new com.lowagie.text.Phrase(
-                text, com.lowagie.text.FontFactory.getFont("Helvetica", 12, com.lowagie.text.Font.BOLD)
-        ));
-        cell.setBackgroundColor(new java.awt.Color(230, 230, 230));
-        cell.setPadding(8);
-        return cell;
+    private void renderPdfContent(Document pdf, Map<Long, BookGroup> groups) throws DocumentException {
+        for (BookGroup g : groups.values()) {
+
+            pdf.add(new Paragraph(
+                    "\nLivro: " + (g.title == null ? "—" : g.title),
+                    FontFactory.getFont("Helvetica", 16, Font.BOLD)
+            ));
+
+            pdf.add(new Paragraph(
+                    "Ano: " + g.publicationYear + "\n" +
+                            "Editora: " + (g.publisher == null ? "" : g.publisher) + "\n" +
+                            "Edição: " + (g.edition == null ? "" : g.edition) + "\n" +
+                            "Preço: R$ " + g.price + "\n",
+                    FontFactory.getFont("Helvetica", 12)
+            ));
+
+            String authorsLine = g.authors.isEmpty() ? "—" : String.join(", ", g.authors);
+            pdf.add(new Paragraph(
+                    "Autores: " + authorsLine + "\n",
+                    FontFactory.getFont("Helvetica", 12, Font.BOLD)
+            ));
+
+            String subjectsLine = g.subjects.isEmpty() ? "—" : String.join(", ", g.subjects);
+            pdf.add(new Paragraph(
+                    "Assuntos: " + subjectsLine + "\n",
+                    FontFactory.getFont("Helvetica", 12, Font.BOLD)
+            ));
+
+            pdf.add(new Paragraph("\n"));
+        }
     }
 
-    private PdfPCell createValueCell(String text) {
-        PdfPCell cell = new PdfPCell(new com.lowagie.text.Phrase(
-                text, com.lowagie.text.FontFactory.getFont("Helvetica", 11)
-        ));
-        cell.setPadding(6);
-        return cell;
-    }
-
-    private boolean isNextRowNewBook(List<VwBooksByAuthor> rows, VwBooksByAuthor currentRow) {
-        int index = rows.indexOf(currentRow);
-        if (index == rows.size() - 1) return true;
-        return !rows.get(index + 1).getBookTitle().equals(currentRow.getBookTitle());
+    private static class BookGroup {
+        Long bookId;
+        String title;
+        String publisher;
+        String edition;
+        String publicationYear;
+        String price;
+        Set<String> authors = new LinkedHashSet<>();
+        Set<String> subjects = new LinkedHashSet<>();
     }
 }
